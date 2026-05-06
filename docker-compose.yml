@@ -1,0 +1,10 @@
+services:
+  number_in_school:
+    build: .
+    container_name: number_in_school
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./state.json:/app/state.json
+
