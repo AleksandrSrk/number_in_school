@@ -26,8 +26,10 @@ def main() -> int:
         return 2
 
     url = f"https://api.telegram.org/bot{token}/getUpdates"
+    session = requests.Session()
+    session.trust_env = False
     try:
-        r = requests.get(url, timeout=20)
+        r = session.get(url, timeout=20)
     except Exception as e:
         print("Request failed:", e)
         return 3

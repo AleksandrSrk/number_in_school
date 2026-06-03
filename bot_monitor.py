@@ -1,10 +1,8 @@
 from playwright.sync_api import sync_playwright
-import time
 import json
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 import os
-import hashlib
 import sys
 
 try:
@@ -63,26 +61,18 @@ def load_state():
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
-
             if "history" not in data:
                 data["history"] = {name: [] for name in TARGETS}
-
             if "baseline" not in data:
                 data["baseline"] = {}
-
             if "school_baseline" not in data:
                 data["school_baseline"] = {}
-
-            if "last_signature" not in data:
-                data["last_signature"] = None
-
             return data
-    except:
+    except Exception:
         return {
             "history": {name: [] for name in TARGETS},
             "baseline": {},
             "school_baseline": {},
-            "last_signature": None
         }
 
 
@@ -97,10 +87,13 @@ def send_telegram(text):
     if not BOT_TOKEN or not CHAT_ID:
         raise RuntimeError("Missing BOT_TOKEN/CHAT_ID. Fill .env or environment variables.")
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    resp = requests.post(url, data={
+    # Ignore HTTP(S)_PROXY / ALL_PROXY from the OS (often socks5 without PySocks).
+    session = requests.Session()
+    session.trust_env = False
+    resp = session.post(url, data={
         "chat_id": CHAT_ID,
         "text": text
-    })
+    }, timeout=30)
     if resp.status_code != 200:
         raise RuntimeError(f"Telegram HTTP {resp.status_code}: {resp.text}")
     try:
@@ -252,13 +245,12 @@ def get_all_data(page):
 
 # ---------------- MESSAGE ----------------
 
-def format_message(state, school_results, next_time):
+def format_message(state, school_results):
     lines = []
 
     lines.append(f"Обновлено: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append("")
 
-    # люди
     for name in TARGETS:
         hist = state["history"].get(name, [])
         if not hist:
@@ -271,11 +263,9 @@ def format_message(state, school_results, next_time):
         chain = " → ".join(map(str, hist))
         lines.append(f"{name}: {chain}{delta_str}")
 
-    # заголовок
     lines.append("")
     lines.append("Длина очереди (свободно/подано):")
 
-    # школы
     for label, value in school_results.items():
         limit = SCHOOLS[label]["limit"]
 
@@ -290,18 +280,7 @@ def format_message(state, school_results, next_time):
 
         lines.append(f"{label}: {limit}/{value}{delta_str}")
 
-    lines.append("")
-    lines.append(f"Следующее обновление: {next_time}")
-
     return "\n".join(lines)
-
-def compute_signature(current, school_results):
-    payload = {
-        "current": current,
-        "schools": school_results,
-    }
-    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 # ---------------- MAIN ----------------
@@ -314,47 +293,29 @@ def main():
         context = browser.new_context(ignore_https_errors=True)
         page = context.new_page()
 
-        while True:
-            print("\n---- НОВЫЙ ЦИКЛ ----", datetime.now())
+        print("---- ЗАПУСК ----", datetime.now())
 
-            try:
-                current, schools = get_all_data(page)
+        try:
+            current, schools = get_all_data(page)
 
-                if not schools:
-                    print("❌ нет данных")
-                    continue
+            if not schools:
+                print("❌ нет данных")
+                return
 
-                sig = compute_signature(current, schools)
-                changed = sig != state.get("last_signature")
+            update_history(state, current)
 
-                update_history(state, current)
+            message = format_message(state, schools)
 
-                next_time = datetime.now() + timedelta(minutes=5)
-                next_str = next_time.strftime("%H:%M:%S")
+            print(message)
+            print("📤 отправка...")
 
-                message = format_message(state, schools, next_str)
+            send_telegram(message)
+            save_state(state)
 
-                print(message)
-                if not changed:
-                    print("⏭️ без изменений — не отправляю")
-                    save_state(state)
-                    time.sleep(300)
-                    continue
+            print("✅ отправлено")
 
-                print("📤 отправка...")
-
-                send_telegram(message)
-                state["last_signature"] = sig
-
-                print("✅ отправлено")
-
-                save_state(state)
-
-            except Exception as e:
-                print("Ошибка:", e)
-
-            print("😴 sleep 5 min")
-            time.sleep(300)
+        except Exception as e:
+            print("Ошибка:", e)
 
 
 if __name__ == "__main__":
